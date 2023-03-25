@@ -15,13 +15,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Add args to the model")
     parser.add_argument("--condition", type=str, default='subject_dependency', help="The condition of the experiment")
     parser.add_argument("--is_reshape", type=bool, default=False, help="Do you want to reshape the feature")
-    parser.add_argument("--use_GPU", type=bool, default=True, help="Do you want to use GPU to train")
+    parser.add_argument("--use_GPU", type=bool, default=False, help="Do you want to use GPU to train")
     parser.add_argument("--batch_size", type=int, default=1, help="train batch size")
     parser.add_argument("--shuffle", type=bool, default=False, help="whether shuffle the train data")
     parser.add_argument("--drop_last", type=bool, default=False, help="whether drop the last train data")
     parser.add_argument("--num_workers", type=int, default=0, help="number of the workers")
     parser.add_argument("--is_norm", type=bool, default=False, help="whether normalize the data")
-    parser.add_argument("--loop_times", type=int, default=1, help="the number of loops")
+    parser.add_argument("--loop_times", type=int, default=2, help="the number of loops")
     parser.add_argument("--momentum", type=float, default=1, help="momentum")
     parser.add_argument("--lr", type=float, default=0.001, help="learn_rate")
     parser.add_argument("--people_num", type=int, default=15, help="the number of people")
@@ -77,17 +77,14 @@ class CNN2d(nn.Module):
         self.in_features_fc1 = self.out_channels_conv2 * math.floor(
             math.floor(self.data_shape[0] / self.kernel_size_pool) / self.kernel_size_pool) * math.floor(
             math.floor(self.data_shape[1] / self.kernel_size_pool) / self.kernel_size_pool)
-        self.out_features_fc1 = 120
+        self.out_features_fc1 = 15
         self.bias_fc1 = True
         self.in_features_fc2 = self.out_features_fc1
-        self.out_features_fc2 = 84
+        self.out_features_fc2 = 8
         self.bias_fc2 = True
         self.in_features_fc3 = self.out_features_fc2
-        self.out_features_fc3 = 10
+        self.out_features_fc3 = class_num
         self.bias_fc3 = True
-        self.in_features_fc4 = self.out_features_fc3
-        self.out_features_fc4 = class_num
-        self.bias_fc4 = True
         self.conv1 = nn.Conv2d(in_channels=self.in_channels_conv1, out_channels=self.out_channels_conv1,
                                kernel_size=self.kernel_size_conv1, stride=self.stride_conv1, padding=self.padding_conv1,
                                padding_mode=self.padding_mode_conv1, bias=self.bias_conv1)
@@ -98,7 +95,6 @@ class CNN2d(nn.Module):
         self.fc1 = nn.Linear(in_features=self.in_features_fc1, out_features=self.out_features_fc1, bias=self.bias_fc1)
         self.fc2 = nn.Linear(in_features=self.in_features_fc2, out_features=self.out_features_fc2, bias=self.bias_fc2)
         self.fc3 = nn.Linear(in_features=self.in_features_fc3, out_features=self.out_features_fc3, bias=self.bias_fc3)
-        self.fc4 = nn.Linear(in_features=self.in_features_fc4, out_features=self.out_features_fc4, bias=self.bias_fc4)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
@@ -106,8 +102,7 @@ class CNN2d(nn.Module):
         x = torch.flatten(x, 1)  # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = self.fc4(x)
+        x = self.fc3(x)
         return x
 
 
@@ -185,7 +180,9 @@ def train_and_test(train_data, train_label, test_data, test_label, batch_size, s
     for i, data in enumerate(test_data_loader, 0):
         inputs, labels = data
         outputs = CNN(inputs)
+        print(outputs)
         _, predict = torch.max(outputs, 1)
+        print(predict)
         total_num = total_num + 1
         if predict == labels:
             correct_num = correct_num + 1
