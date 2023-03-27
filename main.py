@@ -10,18 +10,20 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+import draw_topo
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Add args to the model")
-    parser.add_argument("--condition", type=str, default='subject_independency', help="The condition of the experiment")
-    parser.add_argument("--data_type", type=str, default='1D_not_reshape', help="Do you want to reshape the feature")
+    parser.add_argument("--condition", type=str, default='subject_dependency', help="The condition of the experiment")
+    parser.add_argument("--data_type", type=str, default='2D', help="Do you want to reshape the feature")
     parser.add_argument("--use_GPU", type=bool, default=True, help="Do you want to use GPU to train")
     parser.add_argument("--batch_size", type=int, default=16, help="train batch size")
     parser.add_argument("--shuffle", type=bool, default=True, help="whether shuffle the train data")
     parser.add_argument("--drop_last", type=bool, default=False, help="whether drop the last train data")
     parser.add_argument("--num_workers", type=int, default=0, help="number of the workers")
     parser.add_argument("--is_norm", type=bool, default=True, help="whether normalize the data")
-    parser.add_argument("--loop_times", type=int, default=100, help="the number of loops")
+    parser.add_argument("--loop_times", type=int, default=1, help="the number of loops")
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum")
     parser.add_argument("--lr", type=float, default=0.001, help="learn_rate")
     parser.add_argument("--people_num", type=int, default=15, help="the number of people")
@@ -50,12 +52,47 @@ class MyDataset(Dataset):
             label = torch.cuda.LongTensor([self.label[index]])
             data = data.cuda()
             label = label.cuda()
-        if self.data_type == '1D_not_reshape':
+        if self.data_type == '1D_not_reshape' or self.data_type == '1D_reshape':
             return data, label
         return data.unsqueeze(0), label
 
     def __len__(self):
         return len(self.data)
+
+
+class AlexNet(nn.Module):
+    def __init__(self, num_classes=4):
+        super().init()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLu(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLu(inplace=True),
+            nn.conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLu(inplace=True),
+            nn.conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2)
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * 6 * 6, 4096), nn.ReLu(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096), nn.ReLu(inplace=True),
+            nn.Linear(4096, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), 256 * 6 * 6)
+        x = self.classifier(x)
+        return x
 
 
 class CNN2d(nn.Module):
@@ -104,7 +141,7 @@ class CNN2d(nn.Module):
                                kernel_size=self.kernel_size_conv2, stride=self.stride_conv2, padding=self.padding_conv2,
                                padding_mode=self.padding_mode_conv2, bias=self.bias_conv2)
         self.fc1 = nn.Linear(in_features=self.in_features_fc1, out_features=self.out_features_fc1, bias=self.bias_fc1)
-        self.drop = nn.Dropout(0.2)
+        self.drop = nn.Dropout(0.1)
         self.fc2 = nn.Linear(in_features=self.in_features_fc2, out_features=self.out_features_fc2, bias=self.bias_fc2)
         self.fc3 = nn.Linear(in_features=self.in_features_fc3, out_features=self.out_features_fc3, bias=self.bias_fc3)
 
@@ -113,9 +150,9 @@ class CNN2d(nn.Module):
         x = self.pool(F.relu(self.conv2(x)))
         x = torch.flatten(x, 1)  # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
-        # x=self.drop(x)
+        x = self.drop(x)
         x = F.relu(self.fc2(x))
-        # x=self.drop(x)
+        x = self.drop(x)
         x = self.fc3(x)
         return x
 
@@ -181,8 +218,69 @@ class CNN1dNoReshape(nn.Module):
         return x
 
 
+class CNN1dReshape(nn.Module):
+    def __init__(self, class_num, data_shape):
+        super().__init__()
+        # conv1
+        self.data_shape = data_shape
+        self.in_channels_conv1 = 1
+        self.out_channels_conv1 = 32
+        self.kernel_size_conv1 = 3
+        self.stride_conv1 = 1
+        self.padding_conv1 = 1
+        self.padding_mode_conv1 = 'zeros'
+        self.bias_conv1 = True
+        # pool
+        self.kernel_size_pool = 2
+        self.stride_pool = self.kernel_size_pool
+        self.padding_pool = 0
+        # conv2
+        self.in_channels_conv2 = self.out_channels_conv1
+        self.out_channels_conv2 = 64
+        self.kernel_size_conv2 = 3
+        self.stride_conv2 = 1
+        self.padding_conv2 = 1
+        self.padding_mode_conv2 = 'zeros'
+        self.bias_conv2 = True
+        # fc1
+        self.in_features_fc1 = self.out_channels_conv2 * math.floor(
+            math.floor(self.data_shape[1] / self.kernel_size_pool) / self.kernel_size_pool)
+        self.out_features_fc1 = 128
+        self.bias_fc1 = True
+        # fc2
+        self.in_features_fc2 = self.out_features_fc1
+        self.out_features_fc2 = 64
+        self.bias_fc2 = True
+        # fc3
+        self.in_features_fc3 = self.out_features_fc2
+        self.out_features_fc3 = class_num
+        self.bias_fc3 = True
+        self.conv1 = nn.Conv1d(in_channels=self.in_channels_conv1, out_channels=self.out_channels_conv1,
+                               kernel_size=self.kernel_size_conv1, stride=self.stride_conv1, padding=self.padding_conv1,
+                               padding_mode=self.padding_mode_conv1, bias=self.bias_conv1)
+        self.pool = nn.MaxPool1d(kernel_size=self.kernel_size_pool, stride=self.stride_pool, padding=self.padding_pool)
+        self.conv2 = nn.Conv1d(in_channels=self.in_channels_conv2, out_channels=self.out_channels_conv2,
+                               kernel_size=self.kernel_size_conv2, stride=self.stride_conv2, padding=self.padding_conv2,
+                               padding_mode=self.padding_mode_conv2, bias=self.bias_conv2)
+        self.fc1 = nn.Linear(in_features=self.in_features_fc1, out_features=self.out_features_fc1, bias=self.bias_fc1)
+        self.drop = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(in_features=self.in_features_fc2, out_features=self.out_features_fc2, bias=self.bias_fc2)
+        self.fc3 = nn.Linear(in_features=self.in_features_fc3, out_features=self.out_features_fc3, bias=self.bias_fc3)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = torch.flatten(x, 1)  # flatten all dimensions except batch
+        x = F.relu(self.fc1(x))
+        x = self.drop(x)
+        x = F.relu(self.fc2(x))
+        x = self.drop(x)
+        x = self.fc3(x)
+        return x
+
+
 def data_to_people(people_num, datas, labels):
-    """拼接数据，获取每个人对应的数据，用于被试独立"""
+    """拼接数据,获取每个人对应的数据,用于被试独立"""
     peoples_data_list_version = []
     peoples_label_list_version = []
     for i in range(len(datas)):
@@ -207,7 +305,7 @@ def data_to_people(people_num, datas, labels):
 
 
 def get_datas(test_num, peoples_datas, peoples_labels):
-    """根据轮数，获取对应轮次的训练集和测试集，用于被试独立"""
+    """根据轮数,获取对应轮次的训练集和测试集,用于被试独立"""
     train_datas = []
     train_labels = []
     for people in range(len(peoples_datas)):
@@ -236,6 +334,10 @@ def train_and_test(train_data, train_label, test_data, test_label, batch_size, s
         CNN = CNN1dNoReshape(class_num, data_shape)
     elif data_type == '2D':
         CNN = CNN2d(class_num, data_shape)
+    elif data_type == '1D_reshape':
+        CNN = CNN1dReshape(class_num, data_shape)
+    elif data_type=='mne':
+        CNN=AlexNet(class_num)
     if use_GPU:
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         CNN.to(device)
@@ -288,6 +390,7 @@ def subject_dependency(train_datas, train_labels, test_datas, test_labels, batch
         logs = {"acc": acc}
         progress_bar.set_postfix(**logs)
     acc_avg = np.array(accs).sum() / CNN_num
+    print(accs)
     print("average accuracy:" + str(acc_avg * 100) + "%")
 
 
@@ -298,17 +401,19 @@ def subject_independency(train_datas, train_labels, test_datas, test_labels, peo
     progress_bar.set_description("Steps")
     peoples_data, peoples_label = data_to_people(people_num, train_datas + test_datas, train_labels + test_labels)
     for i in range(people_num):
+        progress_bar.update(1)
         train_datas, train_labels, test_datas, test_labels = get_datas(i, peoples_data, peoples_label)
-        train_datas=np.array(train_datas)[0]
-        train_labels=np.array(train_labels)[0]
-        test_datas=np.array(train_datas)[0]
-        test_labels=np.array(test_labels)[0]
+        train_datas = np.array(train_datas)[0]
+        train_labels = np.array(train_labels)[0]
+        test_datas = np.array(test_datas)[0]
+        test_labels = np.array(test_labels)[0]
         acc = train_and_test(train_datas, train_labels, test_datas, test_labels, batch_size, shuffle,
                              num_workers, drop_last, class_num, lr, momentum, loop_times, use_GPU, is_norm, data_type)
         accs.append(acc)
         logs = {"acc": acc}
         progress_bar.set_postfix(**logs)
     acc_avg = np.array(accs).sum() / people_num
+    print(accs)
     print("average accuracy:" + str(acc_avg * 100) + "%")
 
 
@@ -346,10 +451,21 @@ if __name__ == '__main__':
             if data_type == '1D_not_reshape':
                 train_data = train_data.transpose(0, 2, 1)
                 test_data = test_data.transpose(0, 2, 1)
+            elif data_type == '1D_reshape':
+                train_data = train_data.reshape(train_data.shape[0], 1, -1)
+                test_data = test_data.reshape(test_data.shape[0], 1, -1)
+            elif data_type == 'mne':
+                train_data = draw_topo.numpy_to_mne(train_data)
+                test_data = draw_topo.numpy_to_mne(test_data)
             train_datas.append(train_data)
             train_labels.append(train_label)
             test_datas.append(test_data)
             test_labels.append(test_label)
+    if data_type == 'mne':
+        train_datas = []
+        test_datas = []
+        train_datas = np.load("train_mne.npy")
+        test_datas = np.load("test_mne.npy")
     if condition == 'subject_dependency':
         subject_dependency(train_datas, train_labels, test_datas, test_labels, batch_size, shuffle,
                            num_workers, drop_last, class_num, lr, momentum, loop_times, use_GPU, is_norm, data_type)
